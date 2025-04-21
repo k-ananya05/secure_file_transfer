@@ -1,6 +1,6 @@
 /**
  * Secure File Transfer - Client Side JavaScript
- * Complete implementation with error handling and optimizations
+ * Enhanced with multi-file upload/download support
  */
 
 // Helper functions - defined first to avoid reference errors
@@ -208,13 +208,13 @@ function createAndDownloadFile(data, fileName) {
     URL.revokeObjectURL(url);
 }
 
-// Main functions
-function uploadFile() {
+// Main functions for multiple file handling
+async function uploadFiles() {
     const fileInput = document.getElementById('fileInput');
     const password = document.getElementById('uploadPassword').value;
     
     if (!fileInput.files.length) {
-        showStatus('uploadStatus', 'Please select a file to upload', 'error');
+        showStatus('uploadStatus', 'Please select files to upload', 'error');
         return;
     }
     
@@ -223,135 +223,177 @@ function uploadFile() {
         return;
     }
     
-    const file = fileInput.files[0];
+    const files = Array.from(fileInput.files);
+    const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB limit per file
     
-    // File size check
-    const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB limit
-    if (file.size > MAX_FILE_SIZE) {
-        showStatus('uploadStatus', 'File is too large (max 100MB)', 'error');
+    // Check if any file exceeds the size limit
+    const oversizedFiles = files.filter(file => file.size > MAX_FILE_SIZE);
+    if (oversizedFiles.length > 0) {
+        const fileNames = oversizedFiles.map(f => f.name).join(', ');
+        showStatus('uploadStatus', `These files are too large (max 100MB): ${fileNames}`, 'error');
         return;
     }
     
     // Show loading state
-    showLoadingStatus('uploadStatus', 'Reading file...');
+    showLoadingStatus('uploadStatus', `Processing ${files.length} files...`);
     document.getElementById('uploadProgress').style.display = 'block';
     const progressBar = document.querySelector('#uploadProgress .progress-bar');
-    progressBar.style.width = '10%'; // Initial progress
+    progressBar.style.width = '5%'; // Initial progress
     
-    // Step 1: Read the file as an ArrayBuffer
-    const reader = new FileReader();
+    // Create array to store upload results
+    const uploadResults = [];
+    const fileListElement = document.getElementById('fileList');
+    fileListElement.innerHTML = ''; // Clear previous list
     
-    reader.onload = function(event) {
-        progressBar.style.width = '30%';
-        showLoadingStatus('uploadStatus', 'Compressing file...');
+    // Process each file sequentially
+    for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        const currentFileIndex = i + 1;
+        
+        showLoadingStatus(
+            'uploadStatus', 
+            `Processing file ${currentFileIndex}/${files.length}: ${file.name}`
+        );
         
         try {
-            // Step 2: Compress the file data
-            const fileData = new Uint8Array(event.target.result);
-            const originalSize = fileData.byteLength;
-            const compressedData = compressFile(fileData);
-            const compressedSize = compressedData.byteLength;
+            // Update progress based on file index
+            const baseProgress = (i / files.length) * 100;
+            progressBar.style.width = `${baseProgress + 5}%`;
             
-            // Calculate compression ratio
-            const compressionRatio = Math.round((1 - (compressedSize / originalSize)) * 100);
+            // Read file as ArrayBuffer
+            const fileData = await readFileAsArrayBuffer(file);
+            progressBar.style.width = `${baseProgress + 10}%`;
             
-            progressBar.style.width = '50%';
-            showLoadingStatus('uploadStatus', 'Encrypting file...');
+            // Compress the file data
+            const compressedData = compressFile(new Uint8Array(fileData));
+            const compressionRatio = Math.round((1 - (compressedData.byteLength / fileData.byteLength)) * 100);
+            progressBar.style.width = `${baseProgress + 30}%`;
             
-            // Step 3: Encrypt the compressed data
+            // Encrypt the compressed data
             const encryptedData = encryptFile(compressedData, password);
+            progressBar.style.width = `${baseProgress + 50}%`;
             
-            progressBar.style.width = '70%';
-            showLoadingStatus('uploadStatus', 'Uploading file...');
-            
-            // For debugging - log the encrypted data size
-            console.log('Encrypted data size:', encryptedData.length);
-            
-            // Step 4: Upload the encrypted data to the server
-            // Store encrypted content directly - no conversion needed
-            fetch('/api/upload', {
+            // Upload to server
+            const response = await fetch('/api/upload', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     encryptedContent: encryptedData,
                     originalName: file.name
                 })
-            })
-            .then(response => {
-                if (!response.ok) {
-                    if (response.status === 413) {
-                        throw new Error('File too large for server');
-                    } else {
-                        throw new Error(`Server error (${response.status})`);
-                    }
-                }
-                return response.json();
-            })
-            .then(data => {
-                progressBar.style.width = '100%';
-                
-                setTimeout(() => {
-                    document.getElementById('uploadProgress').style.display = 'none';
-                    showStatus('uploadStatus', 'File uploaded successfully!', 'success');
-                    
-                    // Display file ID and compression info
-                    document.getElementById('fileList').innerHTML = `
-                        <div class="file-item">
-                            <div class="file-info">
-                                <span class="file-name">${file.name}</span>
-                                <span class="file-size">${formatFileSize(file.size)}</span>
-                            </div>
-                        </div>
-                    `;
-                    
-                    // Show upload info with file ID
-                    const uploadInfo = document.getElementById('uploadInfo');
-                    uploadInfo.innerHTML = `
-                        <div class="info-item">
-                            <span class="info-label">File ID:</span>
-                            <span id="generatedFileId" class="info-value">${data.fileId}</span>
-                            <button class="btn-copy" onclick="copyToClipboard('generatedFileId')">
-                                <i class="fas fa-copy"></i>
-                            </button>
-                        </div>
-                        <div class="info-item">
-                            <span class="info-label">Compression:</span>
-                            <span id="compressionRatio" class="info-value">${compressionRatio}%</span>
-                        </div>
-                    `;
-                    uploadInfo.style.display = 'block';
-                }, 500);
-            })
-            .catch(error => {
-                document.getElementById('uploadProgress').style.display = 'none';
-                showStatus('uploadStatus', `Upload failed: ${error.message}`, 'error');
-                console.error('Upload error:', error);
             });
             
+            if (!response.ok) {
+                if (response.status === 413) {
+                    throw new Error('File too large for server');
+                } else {
+                    throw new Error(`Server error (${response.status})`);
+                }
+            }
+            
+            const data = await response.json();
+            
+            // Store the result
+            uploadResults.push({
+                name: file.name,
+                size: file.size,
+                fileId: data.fileId,
+                compressionRatio: compressionRatio
+            });
+            
+            // Add to file list UI
+            const fileItemDiv = document.createElement('div');
+            fileItemDiv.className = 'file-item success';
+            fileItemDiv.innerHTML = `
+                <div class="file-info">
+                    <span class="file-name">${file.name}</span>
+                    <span class="file-size">${formatFileSize(file.size)}</span>
+                    <span class="file-badge">Uploaded</span>
+                </div>
+            `;
+            fileListElement.appendChild(fileItemDiv);
+            
+            progressBar.style.width = `${baseProgress + 70}%`;
+            
         } catch (error) {
-            document.getElementById('uploadProgress').style.display = 'none';
-            showStatus('uploadStatus', `Processing failed: ${error.message}`, 'error');
-            console.error('Processing error:', error);
+            console.error(`Error processing ${file.name}:`, error);
+            
+            // Add to file list UI as failed
+            const fileItemDiv = document.createElement('div');
+            fileItemDiv.className = 'file-item error';
+            fileItemDiv.innerHTML = `
+                <div class="file-info">
+                    <span class="file-name">${file.name}</span>
+                    <span class="file-size">${formatFileSize(file.size)}</span>
+                    <span class="file-badge error">Failed</span>
+                </div>
+                <div class="file-error">${error.message}</div>
+            `;
+            fileListElement.appendChild(fileItemDiv);
         }
-    };
+    }
     
-    reader.onerror = function() {
-        document.getElementById('uploadProgress').style.display = 'none';
-        showStatus('uploadStatus', 'Failed to read file', 'error');
-    };
+    // All files processed - update UI
+    document.getElementById('uploadProgress').style.display = 'none';
     
-    // Start reading the file
-    reader.readAsArrayBuffer(file);
+    if (uploadResults.length > 0) {
+        showStatus('uploadStatus', `Successfully uploaded ${uploadResults.length} of ${files.length} files!`, 'success');
+        
+        // Show upload info with file IDs
+        const uploadInfo = document.getElementById('uploadInfo');
+        let infoHtml = '<h3>Upload Summary</h3>';
+        
+        uploadResults.forEach(result => {
+            const itemId = `fileId-${result.fileId.substring(0, 5)}`;
+            infoHtml += `
+                <div class="info-item">
+                    <span class="info-label">${result.name}:</span>
+                    <span id="${itemId}" class="info-value">${result.fileId}</span>
+                    <button class="btn-copy" onclick="copyToClipboard('${itemId}')">
+                        <i class="fas fa-copy"></i>
+                    </button>
+                    <span class="compression-badge">Compressed: ${result.compressionRatio}%</span>
+                </div>
+            `;
+        });
+        
+        // Add batch download option if there are multiple files
+        if (uploadResults.length > 1) {
+            const batchIds = uploadResults.map(r => r.fileId).join(',');
+            const batchIdElement = 'batchFileIds';
+            infoHtml += `
+                <div class="info-item batch">
+                    <span class="info-label">Batch ID (all files):</span>
+                    <span id="${batchIdElement}" class="info-value">${batchIds}</span>
+                    <button class="btn-copy" onclick="copyToClipboard('${batchIdElement}')">
+                        <i class="fas fa-copy"></i>
+                    </button>
+                </div>
+            `;
+        }
+        
+        uploadInfo.innerHTML = infoHtml;
+        uploadInfo.style.display = 'block';
+    } else {
+        showStatus('uploadStatus', 'All uploads failed. Please try again.', 'error');
+    }
 }
 
-function downloadFile() {
-    const fileId = document.getElementById('fileId').value.trim();
+function readFileAsArrayBuffer(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = event => resolve(event.target.result);
+        reader.onerror = error => reject(error);
+        reader.readAsArrayBuffer(file);
+    });
+}
+
+async function downloadFiles() {
+    const fileIdInput = document.getElementById('fileId').value.trim();
     const password = document.getElementById('downloadPassword').value;
     
-    if (!fileId) {
-        showStatus('downloadStatus', 'Please enter a file ID', 'error');
+    if (!fileIdInput) {
+        showStatus('downloadStatus', 'Please enter file ID(s)', 'error');
         return;
     }
     
@@ -360,81 +402,140 @@ function downloadFile() {
         return;
     }
     
+    // Check if it's a batch download (comma-separated IDs)
+    const fileIds = fileIdInput.split(',').map(id => id.trim()).filter(id => id);
+    
+    if (fileIds.length === 0) {
+        showStatus('downloadStatus', 'Please enter valid file ID(s)', 'error');
+        return;
+    }
+    
     // Show loading state
-    showLoadingStatus('downloadStatus', 'Fetching encrypted file...');
+    showLoadingStatus('downloadStatus', `Preparing to download ${fileIds.length} file(s)...`);
     document.getElementById('downloadProgress').style.display = 'block';
     const progressBar = document.querySelector('#downloadProgress .progress-bar');
-    progressBar.style.width = '10%'; // Initial progress
+    progressBar.style.width = '5%'; // Initial progress
     
-    // Step 1: Fetch the encrypted file from your server
-    fetch(`/api/files/${encodeURIComponent(fileId)}`)
-        .then(response => {
+    const downloadResults = {
+        success: 0,
+        failed: 0,
+        total: fileIds.length
+    };
+    
+    // Process each file ID sequentially
+    for (let i = 0; i < fileIds.length; i++) {
+        const fileId = fileIds[i];
+        const currentFileIndex = i + 1;
+        
+        // Update progress and status
+        const baseProgress = (i / fileIds.length) * 100;
+        progressBar.style.width = `${baseProgress + 5}%`;
+        showLoadingStatus(
+            'downloadStatus', 
+            `Downloading file ${currentFileIndex}/${fileIds.length}...`
+        );
+        
+        try {
+            // Fetch the encrypted file
+            const response = await fetch(`/api/files/${encodeURIComponent(fileId)}`);
+            
             if (!response.ok) {
                 if (response.status === 404) {
-                    throw new Error('File not found');
+                    throw new Error(`File ID "${fileId}" not found`);
                 } else {
                     throw new Error(`Server error (${response.status})`);
                 }
             }
             
-            progressBar.style.width = '40%';
-            return response.json();
-        })
-        .then(data => {
+            progressBar.style.width = `${baseProgress + 25}%`;
+            const data = await response.json();
+            
             if (!data.encryptedContent) {
                 throw new Error('Invalid file data received');
             }
             
-            progressBar.style.width = '60%';
-            showLoadingStatus('downloadStatus', 'Decrypting file...');
+            // Decrypt the data
+            progressBar.style.width = `${baseProgress + 50}%`;
+            showLoadingStatus('downloadStatus', `Decrypting file ${currentFileIndex}/${fileIds.length}...`);
+            const decryptedData = decryptFile(data.encryptedContent, password);
             
-            try {
-                // Step 2: Decrypt the data using the provided password
-                const decryptedData = decryptFile(data.encryptedContent, password);
-                progressBar.style.width = '80%';
-                
-                // Step 3: Decompress the data if it was compressed
-                const decompressedData = decompressFile(decryptedData);
-                progressBar.style.width = '90%';
-                
-                // Step 4: Create a downloadable file from the decrypted/decompressed data
-                createAndDownloadFile(decompressedData, data.fileName || 'downloaded-file');
-                
-                progressBar.style.width = '100%';
-                setTimeout(() => {
-                    document.getElementById('downloadProgress').style.display = 'none';
-                    showStatus('downloadStatus', 'File downloaded successfully!', 'success');
-                }, 500);
-            } catch (error) {
-                document.getElementById('downloadProgress').style.display = 'none';
-                showStatus('downloadStatus', 'Failed to decrypt file. Check your password.', 'error');
-                console.error('Decryption error:', error);
-            }
-        })
-        .catch(error => {
-            document.getElementById('downloadProgress').style.display = 'none';
-            showStatus('downloadStatus', `Download failed: ${error.message}`, 'error');
-            console.error('Download error:', error);
-        });
+            // Decompress the data
+            progressBar.style.width = `${baseProgress + 75}%`;
+            showLoadingStatus('downloadStatus', `Processing file ${currentFileIndex}/${fileIds.length}...`);
+            const decompressedData = decompressFile(decryptedData);
+            
+            // Create and trigger download
+            createAndDownloadFile(decompressedData, data.fileName || `downloaded-file-${fileId}`);
+            downloadResults.success++;
+            
+        } catch (error) {
+            console.error(`Download error for ${fileId}:`, error);
+            showStatus('downloadStatus', `Error with file ${currentFileIndex}: ${error.message}. Continuing with remaining files...`, 'error');
+            // Pause briefly to show the error message
+            await new Promise(resolve => setTimeout(resolve, 1500));
+            downloadResults.failed++;
+        }
+    }
+    
+    // All files processed
+    progressBar.style.width = '100%';
+    setTimeout(() => {
+        document.getElementById('downloadProgress').style.display = 'none';
+        
+        // Show final status
+        if (downloadResults.failed === 0) {
+            showStatus('downloadStatus', `All ${downloadResults.total} files downloaded successfully!`, 'success');
+        } else if (downloadResults.success === 0) {
+            showStatus('downloadStatus', 'Failed to download any files. Please check IDs and password.', 'error');
+        } else {
+            showStatus(
+                'downloadStatus', 
+                `Downloaded ${downloadResults.success} of ${downloadResults.total} files. ${downloadResults.failed} failed.`, 
+                'warning'
+            );
+        }
+    }, 500);
 }
 
-// File input handling
+// File input handling for multiple files
 function handleFileSelect() {
     const fileInput = document.getElementById('fileInput');
     const filePreview = document.getElementById('filePreview');
+    const fileList = document.getElementById('fileList');
     
     if (fileInput.files.length) {
-        const file = fileInput.files[0];
+        // Clear previous list
+        fileList.innerHTML = '';
         
-        // Create file list entry
-        document.getElementById('fileList').innerHTML = `
-            <div class="file-item">
+        // Get all selected files
+        const files = Array.from(fileInput.files);
+        const totalSize = files.reduce((sum, file) => sum + file.size, 0);
+        
+        // Create a summary header if multiple files selected
+        if (files.length > 1) {
+            const summaryDiv = document.createElement('div');
+            summaryDiv.className = 'file-summary';
+            summaryDiv.innerHTML = `
+                <div class="summary-text">
+                    <strong>${files.length} files selected</strong>
+                    <span class="total-size">Total: ${formatFileSize(totalSize)}</span>
+                </div>
+            `;
+            fileList.appendChild(summaryDiv);
+        }
+        
+        // Add each file to the list
+        files.forEach(file => {
+            const fileItemDiv = document.createElement('div');
+            fileItemDiv.className = 'file-item';
+            fileItemDiv.innerHTML = `
                 <div class="file-info">
                     <span class="file-name">${file.name}</span>
                     <span class="file-size">${formatFileSize(file.size)}</span>
                 </div>
-            </div>
-        `;
+            `;
+            fileList.appendChild(fileItemDiv);
+        });
         
         filePreview.style.display = 'block';
     }
@@ -484,8 +585,9 @@ document.addEventListener('DOMContentLoaded', function() {
     const fileInput = document.getElementById('fileInput');
     const dropArea = document.getElementById('dropArea');
     
-    // File input event listeners
+    // Make the file input accept multiple files
     if (fileInput) {
+        fileInput.setAttribute('multiple', 'true');
         fileInput.addEventListener('change', handleFileSelect);
     }
     
@@ -536,10 +638,23 @@ document.addEventListener('DOMContentLoaded', function() {
     const downloadBtn = document.getElementById('downloadBtn');
     
     if (uploadBtn) {
-        uploadBtn.addEventListener('click', uploadFile);
+        uploadBtn.addEventListener('click', uploadFiles);
     }
     
     if (downloadBtn) {
-        downloadBtn.addEventListener('click', downloadFile);
+        downloadBtn.addEventListener('click', downloadFiles);
     }
+    
+    // Update placeholder texts to reflect multiple file capability
+    document.querySelectorAll('.input-prompt').forEach(prompt => {
+        if (prompt.textContent.includes('file ID')) {
+            prompt.textContent = 'Enter file ID(s) - separate multiple IDs with commas';
+        }
+    });
+    
+    document.querySelectorAll('.placeholder-text').forEach(text => {
+        if (text.textContent.includes('Choose a file')) {
+            text.textContent = 'Choose files or drag & drop';
+        }
+    });
 });
